@@ -2,6 +2,8 @@
 #include <CAN.h>
 #include <AsyncTimer.h>
 
+#define min(a,b) ((a)>(b)?(b):(a))
+
 #define CAN_BAUD_RATE 500E3
 
 AsyncTimer timer;
@@ -10,12 +12,24 @@ uint8_t me;
 void readCanMessages();
 void emitCanMessage(uint8_t length, long id, bool extended);
 
+void modifyRegister(uint8_t address, uint8_t mask, uint8_t value) {
+  volatile uint32_t* reg = (volatile uint32_t*)(0x3ff6b000 + address * 4);
+
+  *reg = (*reg & ~mask) | value;
+}
+
 /**
  * Setup everything
  */
 void setup() {
     Serial.begin(9600);
     delay(5000);
+    Serial.println("Hello, lets do this");
+
+    #ifdef ARDUINO_ARCH_ESP32
+    pinMode(GPIO_NUM_15, OUTPUT);
+    digitalWrite(GPIO_NUM_15, LOW);
+    #endif
 
     randomSeed(analogRead(0));
     me = (uint8_t)random(256);
@@ -31,9 +45,21 @@ void setup() {
     }
 
     timer.setInterval([]() { readCanMessages(); }, 1);
-    timer.setInterval([]() { emitCanMessage(8, 0xabcdef, true); }, 20);
-    timer.setInterval([]() { emitCanMessage(5, 0xf5, false); }, 200);
+    timer.setInterval([]() { 
+        for (int i = 0; i<100; i++) {
+            emitCanMessage(8, 0x01 + i, false); 
+        }
+    }, 100);
 
+    #ifdef ARDUINO_ARCH_ESP32
+    esp_chip_info_t chip;
+    esp_chip_info(&chip);
+    Serial.print("chip revision: "); Serial.println(chip.revision);
+    if (chip.revision >= 2) {
+        Serial.println("updating CAN register for weird bug");
+        modifyRegister(0x04, 0x10, 0); // From rev2 used as "divide BRP by 2"
+    }
+    #endif
 }
 
 /**
@@ -70,7 +96,6 @@ void readCanMessages() {
              Serial.print(",");
         }
         Serial.print(" " ); Serial.print(packet[i], HEX);
-        i++;
     }
     Serial.println("");
 }
@@ -80,9 +105,9 @@ void readCanMessages() {
  */
 void emitCanMessage(uint8_t length, long id, bool extended) {
     if (extended) {
-        CAN.beginExtendedPacket(id);
+        CAN.beginExtendedPacket(id, length);
     } else {
-        CAN.beginPacket((int)id);
+        CAN.beginPacket((int)id, length);
     }
 
     CAN.write(me);
